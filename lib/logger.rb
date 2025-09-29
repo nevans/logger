@@ -207,6 +207,38 @@ require_relative 'logger/errors'
 #
 #   logger.progname # => "mung"
 #
+# === Context
+#
+# Log entries can include additional context attributes as key-value pairs.
+# For the default entry formatter, <tt>Logger::Formatter</tt>,
+# context attributes are appended after the message, and values with special
+# characters are escaped and quoted.
+#
+#   logger = Logger.new($stdout)
+#   logger.add(Logger::INFO, 'My message', context: {user: 1234})
+#   # => I, [2022-05-07T18:17:38.084716 #20536]  INFO -- : My message user=1234
+#   logger.add(Logger::INFO, 'My message', context: {quoted: "my context"})
+#   # => I, [2022-05-07T18:17:38.084716 #20536]  INFO -- : My message quoted="my context"
+#
+# Fiber-scoped context can be set inside a #with_context block, and will be
+# merged with log entry context:
+#
+#   logger = Logger.new($stdout)
+#   logger.with_context(foo: 123, bar: 456) do
+#     logger.info('Use context')
+#     # => I, [2025-09-29T16:46:14.960483 #53737]  INFO -- : Use context foo=123 bar=456
+#     logger.info('Add context', context: {baz: 789})
+#     # => I, [2025-09-29T16:46:14.960622 #53737]  INFO -- : Add context foo=123 bar=456 baz=789
+#     logger.info('Override context', context: {foo: 999})
+#     # => I, [2025-09-29T16:46:14.960668 #53737]  INFO -- : Override context foo=999 bar=456
+#     logger.info('Remove context', context: {bar: nil})
+#     # => I, [2025-09-29T16:46:14.960698 #53737]  INFO -- : Remove context bar=456
+#     logger.with_context(nested: "yes") do
+#       logger.info('Nested context')
+#       # => I, [2025-09-29T16:46:14.960730 #53737]  INFO -- : Nested context foo=123 bar=456 nested=yes
+#     end
+#   end
+#
 # == Log Level
 #
 # The log level setting determines whether an entry is actually
@@ -418,36 +450,54 @@ class Logger
     end
   end
 
-  def with_context(context)
-    begin
-      prev_context = context_store[context_key]
-      merged = merge_context(prev_context, context)
-      context_store[context_key] = merged
-      yield merged
-    ensure
-      if prev_context.nil?
-        context_store.delete(context_key)
-      else
-        context_store[context_key] = prev_context
-      end
-    end
+  # Returns the current fiber-scoped context hash, if any.
+  #
+  # Non-nil #context is passed to the formatter.  Logger::Formatter appends the
+  # context to each log entry as "key=value" pairs.
+  def context
+    context_store[context_key]
   end
-  
-  private attr_reader :context_store
-  
-  private def context_key = Fiber.current
-  
-  private def merge_context(prev_context, context)
-    if prev_context.nil?
-      context.dup
-    else
-      case context
-      when Hash
-        prev_context.merge(context)
-      when Array
-        prev_context + context
+
+  # Merge +context+ with current context during the block execution for the
+  # current Fiber only.
+  #
+  #   logger.with_context(user_id: 123) do
+  #     do_the_thing
+  #     logger.info "Done"
+  #   end
+  #   # => I, [2025-09-29T17:01:30.989245 #967]  INFO -- : Done user_id=123
+  #
+  # Context is merged with previously existing context
+  #
+  #   logger.info "message1"
+  #   logger.with_context request_id: request.id do
+  #     logger.info "message2"
+  #     logger.with_context user_id: user.id do
+  #       logger.info "message3"
+  #       logger.info "message4", context: {nested: "nested"}
+  #     end
+  #     logger.info "message5"
+  #   end
+  #   logger.info "message6", context: {ok: "yes, done now"}
+  #
+  #   # => I, [2025-09-29T17:01:30.989245 #967]  INFO -- : message1
+  #   # => I, [2025-09-29T17:01:30.989370 #967]  INFO -- : message2 request_id=d8663d
+  #   # => I, [2025-09-29T17:01:30.989399 #967]  INFO -- : message3 request_id=d8663d user_id=123
+  #   # => I, [2025-09-29T17:01:30.989420 #967]  INFO -- : message4 request_id=d8663d user_id=123 nested=nested
+  #   # => I, [2025-09-29T17:01:30.989437 #967]  INFO -- : message5 request_id=d8663d
+  #   # => I, [2025-09-29T17:01:30.989457 #967]  INFO -- : message6 ok="yes, done now"
+  #
+  def with_context(context)
+    prev_context = context_store[context_key]
+    context = merge_context(self.context, context).dup.freeze
+    begin
+      context_store[context_key] = context
+      yield context
+    ensure
+      if prev_context
+        context_store[context_key] = prev_context
       else
-        context.dup
+        context_store.delete(context_key)
       end
     end
   end
@@ -698,6 +748,8 @@ class Logger
   # See {Log Level}[rdoc-ref:Logger@Log+Level]
   # and {Entries}[rdoc-ref:Logger@Entries] for details.
   #
+  # When +context+ is provided, it will be merged with the current #context.
+  #
   # Examples:
   #
   #   logger = Logger.new($stdout, progname: 'mung')
@@ -759,8 +811,8 @@ class Logger
 
   # Equivalent to calling #add with severity <tt>Logger::DEBUG</tt>.
   #
-  def debug(progname = nil, &block)
-    add(DEBUG, nil, progname, &block)
+  def debug(progname = nil, context: nil, &block)
+    add(DEBUG, nil, progname, context: context, &block)
   end
 
   # Equivalent to calling #add with severity <tt>Logger::INFO</tt>.
@@ -771,26 +823,26 @@ class Logger
 
   # Equivalent to calling #add with severity <tt>Logger::WARN</tt>.
   #
-  def warn(progname = nil, &block)
-    add(WARN, nil, progname, &block)
+  def warn(progname = nil, context: nil, &block)
+    add(WARN, nil, progname, context: context, &block)
   end
 
   # Equivalent to calling #add with severity <tt>Logger::ERROR</tt>.
   #
-  def error(progname = nil, &block)
-    add(ERROR, nil, progname, &block)
+  def error(progname = nil, context: nil, &block)
+    add(ERROR, nil, progname, context: context, &block)
   end
 
   # Equivalent to calling #add with severity <tt>Logger::FATAL</tt>.
   #
-  def fatal(progname = nil, &block)
-    add(FATAL, nil, progname, &block)
+  def fatal(progname = nil, context: nil, &block)
+    add(FATAL, nil, progname, context: context, &block)
   end
 
   # Equivalent to calling #add with severity <tt>Logger::UNKNOWN</tt>.
   #
-  def unknown(progname = nil, &block)
-    add(UNKNOWN, nil, progname, &block)
+  def unknown(progname = nil, context: nil, &block)
+    add(UNKNOWN, nil, progname, context: context, &block)
   end
 
   # Closes the logger; returns +nil+:
@@ -831,23 +883,37 @@ private
     Fiber.current
   end
 
-  def format_message(severity, datetime, progname, msg, context: nil)
-    current_context = @context_store[Fiber.current]
-    formatter = @formatter || @default_formatter
-
-    case context
-    when nil
-      context = current_context
-    when Hash
-      context = current_context.merge(context) if current_context
-    when Array
-      context = current_context + context if current_context
+  # Guarantee the existence of this ivar even when subclasses don't call the superclass constructor.
+  def context_store
+    unless defined?(@context_store)
+      bad = self.class.instance_method(:initialize)
+      file, line = bad.source_location
+      Kernel.warn <<~";;;", uplevel: 2
+        Logger not initialized properly
+        #{file}:#{line}: info: #{bad.owner}\##{bad.name}: \
+        does not call super probably
+      ;;;
     end
+    @context_store ||= {}.compare_by_identity
+  end
 
-    if context.nil?
-      formatter.call(severity, datetime, progname, msg)
-    else
+  def context_key
+    Fiber.current
+  end
+
+  def merge_context(prev_context, context)
+    return prev_context if context.nil?
+    ctx_hash = Hash.try_convert(context) \
+      or raise TypeError, "can't convert %s into Hash" % [context]
+    prev_context.nil? ? ctx_hash : prev_context.merge(ctx_hash)
+  end
+
+  def format_message(severity, datetime, progname, msg, context: nil)
+    formatter = @formatter || @default_formatter
+    if (context = merge_context(self.context, context))
       formatter.call(severity, datetime, progname, msg, context: context)
+    else
+      formatter.call(severity, datetime, progname, msg)
     end
   end
 end

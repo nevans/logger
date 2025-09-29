@@ -3,8 +3,9 @@
 class Logger
   # Default formatter for log messages.
   class Formatter
-    Format = "%.1s, %s[%s #%d] %5s -- %s: %s\n"
+    Format = "%.1s, [%s #%d] %5s -- %s: %s\n"
     DatetimeFormat = "%Y-%m-%dT%H:%M:%S.%6N"
+    NeedsQuoting = /[\\"=[^[:graph:]]]/.freeze
 
     attr_accessor :datetime_format
 
@@ -13,24 +14,37 @@ class Logger
     end
 
     def call(severity, time, progname, msg, context: nil)
-      sprintf(Format, severity, format_context(context), format_datetime(time), Process.pid, severity, progname, msg2str(msg))
+      sprintf(Format, severity, format_datetime(time), Process.pid,
+              severity, progname, format_message_with_context(msg, context))
     end
 
-  private
+    private
+
+    def format_message_with_context(msg, ctx)
+      join_fields [msg2str(msg), format_context(ctx)]
+    end
+
+    def join_fields(fields)
+      fields.reject {|f| f.nil? || f.empty? }.join(" ")
+    end
 
     def format_context(context)
-      context_str = case context
-      when Hash
-        context.filter_map { |k, v| "[#{k}=#{v}]" unless v.nil? }.join(" ")
-      when Array
-        context.filter_map{ |v| "[#{v}]" unless v.nil? }.join(" ")
-      else
-        context.to_s.dup
-      end
+      return unless context
+      context = Hash.try_convert(context) \
+        or raise Error, "Expected context hash, was #{context.class}"
+      join_fields context.map {|k, v| format_pair(k,v) }
+    end
 
-      context_str << " " unless context_str.empty?
+    def format_pair(k, v)
+      "#{k}=#{format_value(v)}" unless v.nil?
+    end
 
-      context_str
+    def format_value(value)
+      # "redundant" interpolation to avoid crash if to_s doesn't return a string
+      # https://github.com/ruby/spec/blob/3affe1e54fcd11918a242ad5d4a7ba895ee30c4c/language/string_spec.rb#L130-L141
+      value = "#{value}"
+      value = value.dump if value.match?(NeedsQuoting)
+      value
     end
 
     def format_datetime(time)

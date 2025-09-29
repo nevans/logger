@@ -11,10 +11,19 @@ class TestLogger < Test::Unit::TestCase
   end
 
   class Log
-    attr_reader :label, :context, :datetime, :pid, :severity, :progname, :msg
+    QUOTED = /"(?:[^"\\]|\\"|\\\\)*"/
+    ATOM   = /[^\\"=[^[:graph:]]]*/
+    CTX_KV = /\w+=(?:#{QUOTED}|#{ATOM})/
+    CTX    = /#{CTX_KV}(?: #{CTX_KV})*/
+    attr_reader :line
+    attr_reader :label, :datetime, :pid, :severity, :progname, :msg, :context
     def initialize(line)
-      /\A(\w+), ((?:\[[^\]]+\] )+)?\[([^#]*) #(\d+)\]\s+(\w+) -- (\w*): ([\x0-\xff]*)/ =~ line
-      @label, @context, @datetime, @pid, @severity, @progname, @msg = $1, $2&.strip, $3, $4, $5, $6, $7
+      @line = line
+      /\A(\w+), \[([^#]*) #(\d+)\]\s+(\w+) -- (\w*): ([\x0-\xff]*)?/ =~ line
+      @label, @datetime, @pid, @severity, @progname, @msg = $1, $2, $3, $4, $5, $6
+      if /([\x0-\xff]+?) (#{CTX})\n/ =~ @msg
+        @msg, @context = $1, $2
+      end
     end
   end
 
@@ -29,7 +38,12 @@ class TestLogger < Test::Unit::TestCase
   def log_raw(logger, msg_id, *arg, **kwargs, &block)
     Tempfile.create(File.basename(__FILE__) + '.log') {|logdev|
       logger.instance_eval { @logdev = Logger::LogDevice.new(logdev) }
-      logger.__send__(msg_id, *arg, **kwargs, &block)
+      if kwargs.any?
+        logger.__send__(msg_id, *arg, **kwargs, &block)
+      else
+        # this is needed for backward compatibility with ruby < 2.7
+        logger.__send__(msg_id, *arg, &block)
+      end
       logdev.rewind
       logdev.read
     }
@@ -147,12 +161,13 @@ class TestLogger < Test::Unit::TestCase
   def test_context
     dummy = STDERR
     logger = Logger.new(dummy)
+    assert_nil logger.context
     log = log_add(logger, INFO, "bang", context: { foo: "bar" })
-    assert_equal("[foo=bar]", log.context)
-    log = log_add(logger, INFO, "bang", context: ["tag"])
-    assert_equal("[tag]", log.context)
+    assert_equal("foo=bar", log.context)
+    assert_nil logger.context
     log = log_add(logger, INFO, "bang", context: nil)
-    assert_equal(nil, log.context)
+    assert_nil log.context
+    assert_nil logger.context
   end
 
   def test_formatter
@@ -243,40 +258,33 @@ class TestLogger < Test::Unit::TestCase
   def test_with_context
     # default
     logger = Logger.new(STDERR)
+    assert_nil logger.context
     log = log(logger, :info, "foo")
     assert_equal(nil, log.context)
     assert_equal("foo\n", log.msg)
     # with hash context
-    logger.with_context(foo: "bar") do
+    logger.with_context(foo: "bar") do |yielded|
+      assert_equal({ foo: "bar" }, logger.context)
+      assert_equal({ foo: "bar" }, yielded)
       log = log(logger, :info, "foo")
-      assert_equal("[foo=bar]", log.context)
-      assert_equal("foo\n", log.msg)
-      logger.with_context(ying: "yang") do
+      assert_equal("foo=bar", log.context)
+      assert_equal("foo", log.msg)
+      logger.with_context(ying: "yang") do |yielded|
+        assert_equal({ foo: "bar", ying: "yang" }, logger.context)
+        assert_equal({ foo: "bar", ying: "yang" }, yielded)
         log = log(logger, :info, "foo")
-        assert_equal("[foo=bar] [ying=yang]", log.context)
-        assert_equal("foo\n", log.msg)
+        assert_equal("foo=bar ying=yang", log.context)
+        assert_equal("foo", log.msg)
       end
       logger.with_context(foo: "bar2") do
+        assert_equal({ foo: "bar2" }, logger.context)
         log = log(logger, :info, "foo")
-        assert_equal("[foo=bar2]", log.context)
-        assert_equal("foo\n", log.msg)
+        assert_equal("foo=bar2", log.context)
+        assert_equal("foo", log.msg)
       end
+      assert_equal({ foo: "bar" }, logger.context)
     end
-    log = log(logger, :info, "foo")
-    assert_equal(nil, log.context)
-    assert_equal("foo\n", log.msg)
-
-    logger.with_context(["tag1"]) do
-      log = log(logger, :info, "foo")
-      assert_equal("[tag1]", log.context)
-      assert_equal("foo\n", log.msg)
-      logger.with_context(["tag2"]) do
-        log = log(logger, :info, "foo")
-        assert_equal("[tag1] [tag2]", log.context)
-        assert_equal("foo\n", log.msg)
-      end
-    end
-
+    assert_nil logger.context
     log = log(logger, :info, "foo")
     assert_equal(nil, log.context)
     assert_equal("foo\n", log.msg)
