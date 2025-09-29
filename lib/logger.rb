@@ -455,7 +455,7 @@ class Logger
   # Non-nil #context is passed to the formatter.  Logger::Formatter appends the
   # context to each log entry as "key=value" pairs.
   def context
-    context_store[context_key]
+    context_overrides[context_key]
   end
 
   # Merge +context+ with current context during the block execution for the
@@ -488,16 +488,16 @@ class Logger
   #   # => I, [2025-09-29T17:01:30.989457 #967]  INFO -- : message6 ok="yes, done now"
   #
   def with_context(context)
-    prev_context = context_store[context_key]
+    prev_context = context_overrides[context_key]
     context = merge_context(self.context, context).dup.freeze
     begin
-      context_store[context_key] = context
+      context_overrides[context_key] = context
       yield context
     ensure
       if prev_context
-        context_store[context_key] = prev_context
+        context_overrides[context_key] = prev_context
       else
-        context_store.delete(context_key)
+        context_overrides.delete(context_key)
       end
     end
   end
@@ -691,7 +691,7 @@ class Logger
     self.formatter = formatter
     @logdev = nil
     @level_override = {}
-    @context_store = {}.compare_by_identity
+    @context_overrides = {}.compare_by_identity
     return unless logdev
     case logdev
     when File::NULL
@@ -884,8 +884,8 @@ private
   end
 
   # Guarantee the existence of this ivar even when subclasses don't call the superclass constructor.
-  def context_store
-    unless defined?(@context_store)
+  def context_overrides
+    unless defined?(@context_overrides)
       bad = self.class.instance_method(:initialize)
       file, line = bad.source_location
       Kernel.warn <<~";;;", uplevel: 2
@@ -894,7 +894,7 @@ private
         does not call super probably
       ;;;
     end
-    @context_store ||= {}.compare_by_identity
+    @context_overrides ||= {}.compare_by_identity
   end
 
   def context_key
