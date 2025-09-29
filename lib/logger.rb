@@ -240,11 +240,16 @@ require_relative 'logger/errors'
 #   end
 #
 # The default context for a new logger may be set in the call to Logger.new via
-# optional keyword argument +context+:
+# optional keyword argument +context+, or by calling #with_context without a
+# block:
 #
-#   logger = Logger.new($stdout, context: {component: "cli"})
+#   logger = Logger.new($stdout, context: {component: "DB"})
 #   logger.info "message"
-#   # => I, [2022-05-07T18:17:38.084716 #20536]  INFO -- : message component=cli
+#   # => I, [2025-09-29T16:46:14.960730 #53737]  INFO -- : message component=DB
+#
+#   logger2 = logger2.with_context foo: "bar"
+#   logger2.info "message"
+#   # => I, [2025-09-29T16:46:14.960730 #53737]  INFO -- : message component=DB foo=bar
 #
 # == Log Level
 #
@@ -465,8 +470,10 @@ class Logger
     context_overrides[context_key] || @context
   end
 
-  # Merge +context+ with current context during the block execution for the
-  # current Fiber only.
+  # Merge +context+ with current context
+  #
+  # With a block, #context is updated during the block execution for the current
+  # Fiber only.
   #
   #   logger.with_context(user_id: 123) do
   #     do_the_thing
@@ -495,7 +502,21 @@ class Logger
   #   # => I, [2025-09-29T17:01:30.989437 #967]  INFO -- : message5 component=CLI request_id=d8663d
   #   # => I, [2025-09-29T17:01:30.989457 #967]  INFO -- : message6 ok="yes, done now"
   #
+  # Without a block, a duplicate logger instance is returned, with only the
+  # default context changed.
+  #
+  #   @logger = parent.logger.with_context(class: self.class)
+  #   parent.logger.logdev.equal?(@logger.logdev)  # => true
+  #   parent.logger.context  # => {class: "Parent", foo: "bar"}
+  #   @logger.context        # => {class: "Child", foo: "bar"}
+  #
   def with_context(context)
+    unless block_given?
+      context = merge_context(@context, context)
+      copy = dup
+      copy.instance_variable_set :@context, context
+      return copy
+    end
     prev_context = context_overrides[context_key]
     context = merge_context(self.context, context).dup.freeze
     begin

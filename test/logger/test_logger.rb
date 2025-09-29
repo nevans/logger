@@ -314,6 +314,16 @@ class TestLogger < Test::Unit::TestCase
     end
   end
 
+  def test_with_context_without_a_block
+    logger = Logger.new(STDERR, context: {default: "ctx1"})
+    logger2 = logger.with_context(blockless: "ctx2")
+    refute_same logger, logger2
+    assert_same logger.logdev, logger2.logdev
+    assert_same logger.level,  logger2.level
+    assert_equal({default: "ctx1"},                    logger.context)
+    assert_equal({default: "ctx1", blockless: "ctx2"}, logger2.context)
+  end
+
   def test_reopen
     logger = Logger.new(STDERR)
     logger.reopen(STDOUT)
