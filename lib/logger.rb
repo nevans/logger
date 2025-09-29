@@ -239,6 +239,13 @@ require_relative 'logger/errors'
 #     end
 #   end
 #
+# The default context for a new logger may be set in the call to Logger.new via
+# optional keyword argument +context+:
+#
+#   logger = Logger.new($stdout, context: {component: "cli"})
+#   logger.info "message"
+#   # => I, [2022-05-07T18:17:38.084716 #20536]  INFO -- : message component=cli
+#
 # == Log Level
 #
 # The log level setting determines whether an entry is actually
@@ -455,7 +462,7 @@ class Logger
   # Non-nil #context is passed to the formatter.  Logger::Formatter appends the
   # context to each log entry as "key=value" pairs.
   def context
-    context_overrides[context_key]
+    context_overrides[context_key] || @context
   end
 
   # Merge +context+ with current context during the block execution for the
@@ -469,6 +476,7 @@ class Logger
   #
   # Context is merged with previously existing context
   #
+  #   logger = Logger.new($stdout, context: {component: "CLI"})
   #   logger.info "message1"
   #   logger.with_context request_id: request.id do
   #     logger.info "message2"
@@ -478,13 +486,13 @@ class Logger
   #     end
   #     logger.info "message5"
   #   end
-  #   logger.info "message6", context: {ok: "yes, done now"}
+  #   logger.info "message6", context: {component: nil, ok: "yes, done now"}
   #
-  #   # => I, [2025-09-29T17:01:30.989245 #967]  INFO -- : message1
-  #   # => I, [2025-09-29T17:01:30.989370 #967]  INFO -- : message2 request_id=d8663d
-  #   # => I, [2025-09-29T17:01:30.989399 #967]  INFO -- : message3 request_id=d8663d user_id=123
-  #   # => I, [2025-09-29T17:01:30.989420 #967]  INFO -- : message4 request_id=d8663d user_id=123 nested=nested
-  #   # => I, [2025-09-29T17:01:30.989437 #967]  INFO -- : message5 request_id=d8663d
+  #   # => I, [2025-09-29T17:01:30.989245 #967]  INFO -- : message1 component=CLI
+  #   # => I, [2025-09-29T17:01:30.989370 #967]  INFO -- : message2 component=CLI request_id=d8663d
+  #   # => I, [2025-09-29T17:01:30.989399 #967]  INFO -- : message3 component=CLI request_id=d8663d user_id=123
+  #   # => I, [2025-09-29T17:01:30.989420 #967]  INFO -- : message4 component=CLI request_id=d8663d user_id=123 nested=nested
+  #   # => I, [2025-09-29T17:01:30.989437 #967]  INFO -- : message5 component=CLI request_id=d8663d
   #   # => I, [2025-09-29T17:01:30.989457 #967]  INFO -- : message6 ok="yes, done now"
   #
   def with_context(context)
@@ -659,6 +667,11 @@ class Logger
   #
   #     Logger.new('t.log', progname: 'mung')
   #
+  # - +context+: sets the default context; default is +nil+.
+  #   See {Context}[rdoc-ref:Logger@Context]:
+  #
+  #     Logger.new('t.log', context: { component: self.class.component.name })
+  #
   # - +formatter+: sets the entry formatter; default is +nil+.
   #   See {formatter=}[Logger.html#attribute-i-formatter].
   #
@@ -681,7 +694,8 @@ class Logger
   #   the header will be written as usual.
   #
   def initialize(logdev, shift_age = 0, shift_size = 1048576, level: DEBUG,
-                 progname: nil, formatter: nil, datetime_format: nil,
+                 progname: nil, context: nil,
+                 formatter: nil, datetime_format: nil,
                  binmode: false, shift_period_suffix: '%Y%m%d',
                  reraise_write_errors: [], skip_header: false)
     self.level = level
@@ -691,6 +705,7 @@ class Logger
     self.formatter = formatter
     @logdev = nil
     @level_override = {}
+    @context = merge_context(nil, context).dup.freeze
     @context_overrides = {}.compare_by_identity
     return unless logdev
     case logdev

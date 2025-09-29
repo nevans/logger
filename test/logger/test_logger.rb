@@ -170,6 +170,21 @@ class TestLogger < Test::Unit::TestCase
     assert_nil logger.context
   end
 
+  def test_default_context
+    dummy = STDERR
+    logger = Logger.new(dummy, context: { subsystem: "cli" })
+    assert_equal({ subsystem: "cli" }, logger.context)
+    log = log_add(logger, INFO, "bang")
+    assert_equal("subsystem=cli", log.context)
+    assert_equal({ subsystem: "cli" }, logger.context)
+    log = log_add(logger, INFO, "bang", context: { etc: "etc" })
+    assert_equal("subsystem=cli etc=etc", log.context)
+    assert_equal({ subsystem: "cli" }, logger.context)
+    log = log_add(logger, INFO, "bang", context: { subsystem: nil })
+    assert_nil log.context
+    assert_equal({ subsystem: "cli" }, logger.context)
+  end
+
   def test_formatter
     dummy = STDERR
     logger = Logger.new(dummy)
@@ -288,6 +303,15 @@ class TestLogger < Test::Unit::TestCase
     log = log(logger, :info, "foo")
     assert_equal(nil, log.context)
     assert_equal("foo\n", log.msg)
+  end
+
+  def test_with_context_merges_default_context_and_local_context
+    logger = Logger.new(STDERR, context: {default: "ctx1"})
+    logger.with_context(block: "ctx2") do |yielded|
+      assert_equal({ default: "ctx1", block: "ctx2" }, logger.context)
+      log = log(logger, :info, "foo", context: {local: "ctx3"} )
+      assert_equal("default=ctx1 block=ctx2 local=ctx3", log.context)
+    end
   end
 
   def test_reopen
