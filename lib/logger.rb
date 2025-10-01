@@ -735,7 +735,7 @@ class Logger
     @logdev = nil
     @level_override = OverrideMap.new
     @context = merge_context(nil, context).dup.freeze
-    @context_overrides = {}.compare_by_identity
+    @context_overrides = OverrideMap.new
     return unless logdev
     case logdev
     when File::NULL
@@ -926,6 +926,7 @@ private
   def initialize_copy(other)
     super
     @level_override = @level_override&.clone&.clear
+    @context_overrides = @context_overrides&.clone&.clear
   end
 
   def level_key
@@ -943,7 +944,7 @@ private
         does not call super probably
       ;;;
     end
-    @context_overrides ||= {}.compare_by_identity
+    @context_overrides ||= OverrideMap.new
   end
 
   def context_key
